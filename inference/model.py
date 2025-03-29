@@ -134,16 +134,16 @@ def linear(x: torch.Tensor, weight: torch.Tensor, bias: Optional[torch.Tensor] =
 
     Args:
         x (torch.Tensor): The input tensor.
-        weight (torch.Tensor): The weight tensor. It may be quantized and 
+        weight (torch.Tensor): The weight tensor. It may be quantized and
             requires dequantization for certain cases.
         bias (Optional[torch.Tensor]): The bias tensor to be added. Default is None.
 
     Returns:
-        torch.Tensor: The result of the linear transformation, which may involve 
+        torch.Tensor: The result of the linear transformation, which may involve
         quantization-aware computations depending on the input parameters.
 
     Notes:
-        - If `weight` is quantized (e.g., `element_size() == 1`), a dequantized version 
+        - If `weight` is quantized (e.g., `element_size() == 1`), a dequantized version
           is used for computation.
         - If `gemm_impl == "bf16"`, dequantization and a `bf16` GEMM operation are applied.
         - For other cases, the function applies quantization to `x` and uses `fp8_gemm` for computation.
@@ -475,7 +475,7 @@ class MLA(nn.Module):
             self.v_cache[:bsz, start_pos:end_pos] = v
             scores = torch.einsum("bshd,bthd->bsht", q, self.k_cache[:bsz, :end_pos]) * self.softmax_scale
         else:
-            wkv_b = self.wkv_b.weight if self.wkv_b.scale is None else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size) 
+            wkv_b = self.wkv_b.weight if self.wkv_b.scale is None else weight_dequant(self.wkv_b.weight, self.wkv_b.scale, block_size)
             wkv_b = wkv_b.view(self.n_local_heads, -1, self.kv_lora_rank)
             q_nope = torch.einsum("bshd,hdc->bshc", q_nope, wkv_b[:, :self.qk_nope_head_dim])
             self.kv_cache[:bsz, start_pos:end_pos] = self.kv_norm(kv)
@@ -796,9 +796,100 @@ class Transformer(nn.Module):
 
 if __name__ == "__main__":
     torch.set_default_dtype(torch.bfloat16)
-    torch.set_default_device("cuda")
+    torch.set_default_device("cpu")
     torch.manual_seed(0)
-    args = ModelArgs()
+    # args = ModelArgs()
+    # DS 671B
+    args = ModelArgs(
+        vocab_size=129280,
+        dim=7168,
+        inter_dim=18432,
+        moe_inter_dim=2048,
+        n_layers=61,
+        n_dense_layers=3,
+        n_heads=128,
+        n_routed_experts=256,
+        n_shared_experts=1,
+        n_activated_experts=8,
+        n_expert_groups=8,
+        n_limited_groups=4,
+        route_scale=2.5,
+        score_func="sigmoid",
+        q_lora_rank=1536,
+        kv_lora_rank=512,
+        qk_nope_head_dim=128,
+        qk_rope_head_dim=64,
+        v_head_dim=128,
+        dtype="fp"
+    )
+    from torchsummary import summary
     x = torch.randint(0, args.vocab_size, (2, 128))
     model = Transformer(args)
-    print(model(x).size())
+    print(model)
+    # print(model(x).size())
+
+    # for name, param in model.named_parameters():
+    #     print(name, param.size(), param.numel())
+
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f'Total number of parameters: {total_params}')
+
+    def print_module_params_and_size(model):
+        total_params = 0  # 总参数数量
+        total_size = 0  # 总内存大小（字节数）
+
+        # 遍历模型的所有子模块
+        for name, module in model.named_modules():
+            num_params = sum(p.numel() for p in module.parameters())
+            param_size = num_params * 4  # 假设是 float32，每个元素占4字节
+
+            # 打印模块名称，参数数量和内存占用
+            print(f"Module: {name}")
+            print(f"  Parameters: {num_params}")
+            print(f"  Size (in GB): {param_size / (1024**3):.4f} GB")
+
+            # 累加参数和内存大小
+            total_params += num_params
+            total_size += param_size
+
+        # 打印总参数数量和总内存大小（以GB为单位）
+        total_size_gb = total_size / (1024**3)  # 转换为 GB
+        print(f"Total parameters: {total_params}")
+        print(f"Total size (in GB): {total_size_gb:.4f} GB")
+
+    print_module_params_and_size(model)
+
+    def print_layer_params_and_size(model):
+        total_params_per_layer = {}  # 每个层的参数大小
+
+        for i, layer in enumerate(model.layers):
+            total_params = 0
+            total_size = 0
+
+            # 计算该层的所有子模块的参数大小
+            for name, module in layer.named_modules():
+                num_params = sum(p.numel() for p in module.parameters())
+                param_size = num_params * 4  # 假设是 float32 每个元素占 4 字节
+                total_params += num_params
+                total_size += param_size
+
+            total_size_gb = total_size / (1024**3)  # 转换为 GB
+            total_params_per_layer[i] = {
+                'params': total_params,
+                'size_bytes': total_size,
+                'size_gb': total_size_gb
+            }
+            print(f"Layer {i}:")
+            print(f"  Total parameters: {total_params}")
+            print(f"  Total size (in bytes): {total_size}")
+            print(f"  Total size (in GB): {total_size_gb:.4f} GB")
+
+        return total_params_per_layer
+
+    print_layer_params_and_size(model)
+
+
+    # bs=2,seq_len=128
+    # torchsummary.summary(model, (2, 128), device="cpu")
+
+    # summary(model, input_size=(2, 128), device="cpu")
